@@ -1,0 +1,23 @@
+# Build output
+dist/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Local-only, per-machine views — regenerable, never committed.
+.context/.pending/
+.context/BOARD.md
+.context/activity.md
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Group-chat backend secret (Upstash url/token) — never commit
+.coflow.local.json
+
+# OS / editor
+.DS_Store
+*.log

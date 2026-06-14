@@ -1,0 +1,52 @@
+{
+  "name": "@krish0023/coflow",
+  "version": "0.1.0",
+  "description": "Local-first MCP server that gives every teammate's Claude Code a live, shared picture of what the rest of the team is working on. Git is the source of truth; the vector index is a disposable cache; sync is driven by deterministic hooks.",
+  "type": "module",
+  "bin": {
+    "coflow": "dist/cli/main.js"
+  },
+  "main": "dist/mcp.js",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && node -e \"require('fs').chmodSync('dist/cli/main.js', 0o755)\"",
+    "dev": "tsx src/cli/main.ts",
+    "mcp": "tsx src/mcp.ts",
+    "start": "node dist/mcp.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "model-context-protocol",
+    "team",
+    "context",
+    "git"
+  ],
+  "license": "MIT",
+  "author": "Krish Ahuja <krishahujax6333941@gmail.com>",
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.5.0",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "picocolors": "^1.1.1",
+    "yaml": "^2.9.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0"
+  }
+}
