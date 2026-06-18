@@ -1,6 +1,19 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { Context } from "../core/context.js";
 import { FeatureStatus } from "../core/schema.js";
+
+/** The installed package version, read from package.json at the package root. */
+function coflowVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(new URL("../../package.json", import.meta.url), "utf8"),
+    ) as { version?: string };
+    return pkg.version ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 /**
  * Single entry point for the package's bin. Routes:
@@ -26,7 +39,7 @@ function has(args: string[], name: string): boolean {
 const COMMANDS = [
   "init", "connect", "claude", "go", "chat", "doctor", "watch", "say", "activity",
   "status", "summary", "summarize-chat", "board", "search", "checkpoint", "compact",
-  "pull", "mcp", "hook", "help",
+  "pull", "mcp", "hook", "help", "version",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -277,6 +290,13 @@ async function main(): Promise<void> {
       return;
     }
 
+    case "version":
+    case "--version":
+    case "-v": {
+      console.log(`coflow ${coflowVersion()}`);
+      return;
+    }
+
     case "help":
     case "--help":
     case "-h": {
@@ -319,6 +339,7 @@ usage:
   coflow pull                    fetch + regenerate board
   coflow mcp                     start the MCP server (stdio)
   coflow hook <name>             run a hook (settings.json uses this)
+  coflow version                 print the installed version (also --version, -v)
 
 hook names: session-start | pre-tool-use | post-tool-use | stop | session-end`);
 }
