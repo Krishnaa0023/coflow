@@ -11,6 +11,7 @@ import {
 } from "@clack/prompts";
 import pc from "picocolors";
 import { banner } from "./brand.js";
+import { card, stage } from "./fx.js";
 import { paths } from "../core/paths.js";
 import { encodeKey, decodeKey, newGroupId, type Connection } from "../core/key.js";
 import { saveConnection, resolveConnection } from "../core/live.js";
@@ -27,6 +28,8 @@ export interface ConnectOptions {
   upstash?: boolean;
   url?: string;
   token?: string;
+  /** True when called as the next chapter of init/landing. */
+  embedded?: boolean;
 }
 
 function ensureLocalGitignore(repoRoot: string): void {
@@ -74,8 +77,19 @@ export async function connect(opts: ConnectOptions = {}): Promise<void> {
     return;
   }
 
+  const interactive =
+    Boolean(process.stdin.isTTY) &&
+    Boolean(process.stdout.isTTY) &&
+    process.env.TERM !== "dumb";
+  if (!interactive) {
+    console.log("coflow connect: pass a coflow1_ key to join, or use --new to create a group.");
+    process.exitCode = 2;
+    return;
+  }
+
   // Interactive.
-  console.log(banner("connect a group"));
+  if (!opts.embedded) console.log(banner("connect a group"));
+  stage(opts.embedded ? 3 : 1, opts.embedded ? 3 : 1, "Open the room", "live chat for agents");
   intro(pc.bgCyan(pc.black(" coflow connect ")));
   const existing = resolveConnection(p);
 
@@ -94,10 +108,10 @@ export async function connect(opts: ConnectOptions = {}): Promise<void> {
     if (isCancel(a)) return cancel("Cancelled.");
     action = String(a);
     if (action === "show") {
-      note(
-        `${pc.bold("Your group key")} — share it to invite others:\n\n  ${pc.cyan(encodeKey(existing))}`,
-        "Invite",
-      );
+      card("Invite key", [
+        "Share this with trusted teammates or machines:",
+        encodeKey(existing),
+      ]);
       outro(`Still in group "${existing.group}". Run ${pc.cyan("coflow chat")}.`);
       return;
     }
@@ -172,9 +186,10 @@ export async function connect(opts: ConnectOptions = {}): Promise<void> {
   }
 
   saveConnection(p, conn);
-  note(
-    `${pc.bold("Share this key")} so others join the same group${conn.kind === "local" ? pc.dim(" (this machine only)") : ""}:\n\n  ${pc.cyan(encodeKey(conn))}`,
-    "Group key",
-  );
-  outro(`${pc.green("Group created.")} Restart open Claude sessions here to join, then ${pc.cyan("coflow chat")} to watch.`);
+  card("Room key", [
+    `Backend: ${conn.kind}${conn.kind === "local" ? " (this machine only)" : ""}`,
+    "Share this key only with people/machines that should join:",
+    encodeKey(conn),
+  ]);
+  outro(`${pc.green("Group created.")} Restart open Claude sessions here, then ${pc.cyan("coflow chat")} to watch.`);
 }

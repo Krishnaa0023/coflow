@@ -316,7 +316,7 @@ async function main(): Promise<void> {
 }
 
 function printHelp(): void {
-  console.log(`coflow — shared project context for Claude Code
+  console.log(`coflow - shared project context for Claude Code
 
 usage:
   coflow init [--yes] [--npx] [--worktree] [--branch <name>]

@@ -1,7 +1,7 @@
 import readline from "node:readline";
 import pc from "picocolors";
 import { Context } from "../core/context.js";
-import { banner } from "./brand.js";
+import { headerLine } from "./brand.js";
 import { redact } from "../core/redact.js";
 import { groupByDay, sortMessages } from "../core/summary.js";
 import { dedupeFeed } from "../core/feed.js";
@@ -86,10 +86,10 @@ export async function runChat(opts: { raw?: boolean } = {}): Promise<void> {
   process.stdout.on("resize", () => rl.prompt(true)); // keep the input line intact on resize
 
   const online = (await ctx.live.members().catch(() => [])).length;
-  console.log(banner("group chat"));
   console.log(
-    pc.dim(
-      `  group ${ctx.live.group} (${ctx.live.kind})  ·  ${online} online  ·  type to send  ·  /q to quit`,
+    headerLine(
+      "chat",
+      `group ${ctx.live.group} (${ctx.live.kind}) · ${online} online · type to send · /q to quit`,
     ),
   );
 

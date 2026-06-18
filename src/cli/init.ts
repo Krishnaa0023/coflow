@@ -34,7 +34,16 @@ const PKG_NAME = "@krish0023/coflow";
 const BIN_NAME = "coflow";
 import { Git } from "../core/git.js";
 import { banner, LOGO_LINES, TAGLINE } from "./brand.js";
-import { revealLogo, typeLine, loadingBar, bootSequence, celebrate, canAnimate } from "./fx.js";
+import {
+  revealLogo,
+  typeLine,
+  loadingBar,
+  celebrate,
+  canAnimate,
+  card,
+  questSequence,
+  stage,
+} from "./fx.js";
 
 /**
  * `coflow init` — the onboarding entry point.
@@ -352,15 +361,17 @@ async function wizard(
   selfScript: string,
   defaultStore: StoreMode,
   defaultBranch: string,
+  embedded: boolean,
 ): Promise<Answers> {
-  if (canAnimate()) {
+  if (!embedded && canAnimate()) {
     await revealLogo(LOGO_LINES);
     await typeLine(TAGLINE, { delay: 12 });
     await loadingBar("booting coflow", 750);
     console.log();
-  } else {
+  } else if (!embedded) {
     console.log(banner());
   }
+  stage(embedded ? 2 : 1, embedded ? 3 : 2, "Wire the project", "MCP, hooks, memory");
   intro(pc.bgCyan(pc.black(" coflow setup ")));
   note(
     [
@@ -489,6 +500,8 @@ export interface InitOptions {
   yes?: boolean;
   store?: StoreMode;
   branch?: string;
+  /** True when called from the branded front door; suppress duplicate intro art. */
+  embedded?: boolean;
 }
 
 export async function init(opts: InitOptions = {}): Promise<void> {
@@ -503,7 +516,11 @@ export async function init(opts: InitOptions = {}): Promise<void> {
   // Respect a committed .coflow.json (e.g. a teammate cloned a worktree repo).
   const existing = readCoflowConfig(repoRoot);
 
-  const interactive = !opts.yes && Boolean(process.stdin.isTTY);
+  const interactive =
+    !opts.yes &&
+    Boolean(process.stdin.isTTY) &&
+    Boolean(process.stdout.isTTY) &&
+    process.env.TERM !== "dumb";
 
   let answers: Answers;
   if (interactive) {
@@ -515,6 +532,7 @@ export async function init(opts: InitOptions = {}): Promise<void> {
       selfScript,
       existing.store,
       existing.branch,
+      Boolean(opts.embedded),
     );
   } else {
     answers = {
@@ -535,7 +553,7 @@ export async function init(opts: InitOptions = {}): Promise<void> {
     p = paths();
   }
 
-  // Use the animated boot sequence when we can; otherwise a plain clack spinner.
+  // Use the animated quest sequence when we can; otherwise a plain clack spinner.
   const animating = interactive && canAnimate();
   const s = interactive && !animating ? spinner() : null;
   s?.start(
@@ -544,54 +562,64 @@ export async function init(opts: InitOptions = {}): Promise<void> {
       : "Writing configuration",
   );
 
-  // Bootstrap the worktree (local only; the first push happens at a checkpoint).
   let storeReady = true;
   let warn = "";
-  if (answers.store === "worktree") {
-    if (await git.isRepo()) {
-      try {
-        await git.ensureContextWorktree(answers.branch, p.root);
-      } catch (err) {
-        storeReady = false;
-        warn = `worktree setup failed: ${(err as Error).message}`;
-      }
-    } else {
-      storeReady = false;
-      warn = "not a git repo yet — the worktree will be created on first use";
-    }
-  }
-  if (storeReady) ensureStore(p);
+  let written: string[] = [];
 
-  const written = applyConfig(p, answers, selfScript);
-  if (answers.store === "worktree") written.unshift(rel(repoRoot, p.coflowConfig));
-  if (storeReady) {
-    written.push(
-      answers.store === "worktree"
-        ? `${p.root}  (worktree · branch '${answers.branch}')`
-        : `${rel(repoRoot, p.featuresDir)}/  (store)`,
-    );
-  }
-  s?.stop(
-    storeReady && answers.store === "worktree"
-      ? "Dedicated context branch ready"
-      : "Configuration written",
-  );
-  // Stylised "install" recap — the real writes already happened above (instantly);
-  // this just sells the moment. Steps mirror the artifacts actually written.
+  const prepareStore = async () => {
+    // Bootstrap the worktree (local only; the first push happens at a checkpoint).
+    if (answers.store === "worktree") {
+      if (await git.isRepo()) {
+        try {
+          await git.ensureContextWorktree(answers.branch, p.root);
+        } catch (err) {
+          storeReady = false;
+          warn = `worktree setup failed: ${(err as Error).message}`;
+        }
+      } else {
+        storeReady = false;
+        warn = "not a git repo yet — the worktree will be created on first use";
+      }
+    }
+    if (storeReady) ensureStore(p);
+  };
+
+  const writeProjectConfig = () => {
+    written = applyConfig(p, answers, selfScript);
+    if (answers.store === "worktree") written.unshift(rel(repoRoot, p.coflowConfig));
+    if (storeReady) {
+      written.push(
+        answers.store === "worktree"
+          ? `${p.root}  (worktree · branch '${answers.branch}')`
+          : `${rel(repoRoot, p.featuresDir)}/  (store)`,
+      );
+    }
+  };
+
   if (animating) {
-    await bootSequence([
-      { label: "Linking lifecycle hooks" },
-      { label: "Writing the MCP manifest" },
-      { label: "Teaching CLAUDE.md the compact protocol" },
+    await questSequence([
       {
         label:
           answers.store === "worktree"
             ? `Carving the '${answers.branch}' context branch`
             : "Building the .context store",
+        run: prepareStore,
       },
+      { label: "Writing the MCP manifest", run: writeProjectConfig },
+      { label: "Linking lifecycle hooks" },
+      { label: "Teaching CLAUDE.md the compact protocol" },
       { label: "Arming daily chat memory (auto-summaries)" },
-    ]);
+    ], 520);
+  } else {
+    await prepareStore();
+    writeProjectConfig();
   }
+
+  s?.stop(
+    storeReady && answers.store === "worktree"
+      ? "Dedicated context branch ready"
+      : "Configuration written",
+  );
   if (warn) {
     if (interactive) log.warn(warn);
     else console.error(warn);
@@ -602,12 +630,12 @@ export async function init(opts: InitOptions = {}): Promise<void> {
   const cc = command(answers.mode, repoRoot, selfScript);
   const base = [cc.bin, ...cc.prefixArgs].join(" ");
   const next: string[] = [];
-  next.push(`Open each Claude session with  ${pc.cyan(base + " claude")}  — it auto-assigns a distinct identity (no env vars to set).`);
+  next.push(`Open each Claude session with  ${pc.cyan(base + " claude")}  - it auto-assigns a distinct identity (no env vars to set).`);
   next.push(`Watch the live group chat with  ${pc.cyan(base + " chat")}  ${pc.dim("(or the dashboard: " + base + " watch)")}`);
   if (answers.mode === "bin") next.push("Make sure `coflow` is on your PATH (npm i -g, or a dev dependency).");
   if (answers.mode === "self") next.push("Config calls your local build by absolute path — great for testing; publish + use bin mode to share.");
   if (answers.store === "worktree") {
-    next.push(`Context lives on the '${answers.branch}' branch — your code branches stay clean.`);
+    next.push(`Context lives on the '${answers.branch}' branch - your code branches stay clean.`);
     next.push(remote ? "It's pushed to origin on your first checkpoint." : "Add a remote to share it: git remote add origin <url>.");
   } else if (!remote) {
     next.push("Add a remote to share with teammates: git remote add origin <url>.");
@@ -616,18 +644,17 @@ export async function init(opts: InitOptions = {}): Promise<void> {
 
   if (interactive) {
     note(written.map((w) => `${pc.green("+")} ${w}`).join("\n"), "Wrote");
-    if (animating) await celebrate("✦  COFLOW ONLINE  ✦");
-    outro(
-      `${pc.green("Done.")}\n` +
-        next.map((n, i) => `  ${pc.dim(`${i + 1}.`)} ${n}`).join("\n"),
-    );
+    if (animating) await celebrate("LEVEL CLEAR: COFLOW ONLINE", "+5 coordination unlocked");
+    card("Installed", next.map((n, i) => `${i + 1}. ${n}`));
     const wantChat = await confirm({
-      message: "Set up the real-time group chat now? (recommended)",
+      message: "Open a live coordination room now?",
       initialValue: true,
     });
     if (!isCancel(wantChat) && wantChat) {
       const { connect } = await import("./connect.js");
-      await connect({});
+      await connect({ embedded: true });
+    } else {
+      outro(`${pc.green("Done.")} Restart open Claude Code sessions so the new config loads.`);
     }
   } else {
     console.log("coflow: wrote");

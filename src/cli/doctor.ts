@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import pc from "picocolors";
 import { Context } from "../core/context.js";
 import { readJsonSafe } from "../core/jsonfile.js";
-import { banner } from "./brand.js";
+import { headerLine } from "./brand.js";
 
 /**
  * `coflow doctor` — a health/observability report. Because the hooks swallow
@@ -71,7 +71,7 @@ export async function runDoctor(): Promise<void> {
   add(claudeOk ? "ok" : "warn", "CLAUDE.md", claudeOk ? "coflow guidance present" : "missing — run `coflow init`");
 
   // Render
-  console.log(banner("doctor"));
+  console.log(headerLine("doctor", "health check"));
   const mark = (s: Status) => (s === "ok" ? pc.green("✓") : s === "warn" ? pc.yellow("!") : pc.red("✗"));
   for (const c of checks) console.log(`  ${mark(c.s)} ${c.label.padEnd(14)} ${pc.dim(c.detail)}`);
 

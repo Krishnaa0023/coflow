@@ -3,7 +3,7 @@ import pc from "picocolors";
 import { confirm, isCancel } from "@clack/prompts";
 import { LOGO_LINES, TAGLINE } from "./brand.js";
 import { paths } from "../core/paths.js";
-import { revealLogo, typeLine, gradient, loadingBar, canAnimate } from "./fx.js";
+import { revealLogo, typeLine, gradient, runner, canAnimate, card, stage } from "./fx.js";
 
 /**
  * `coflow` with no arguments — the front door. In a TTY it plays the animated
@@ -17,37 +17,39 @@ export async function landing(): Promise<void> {
 
   await revealLogo(LOGO_LINES);
   await typeLine(TAGLINE, { delay: 14 });
-  console.log();
 
-  if (!process.stdin.isTTY) {
+  const interactive =
+    Boolean(process.stdin.isTTY) &&
+    Boolean(process.stdout.isTTY) &&
+    process.env.TERM !== "dumb";
+
+  if (!interactive) {
     signpost(ready);
     return;
   }
 
   if (!ready) {
-    if (canAnimate()) await loadingBar("scanning project", 650);
+    stage(1, 3, "Project handshake", "teach this folder how agents coordinate");
+    if (canAnimate()) await runner("scouting repo terrain", 760);
     const go = await confirm({
-      message: "Set up coflow in this folder now?",
+      message: "Turn this folder into a coflow project?",
       initialValue: true,
     });
     if (!isCancel(go) && go) {
       const { init } = await import("./init.js");
-      await init({});
+      await init({ embedded: true });
       return;
     }
     signpost(false);
     return;
   }
 
-  console.log(`  ${pc.bold("Ready to flow.")} ${pc.dim("Pick one:")}`);
-  for (const [cmd, desc] of [
-    ["coflow chat", "live group chat, grouped by day"],
-    ["coflow watch", "live dashboard"],
-    ["coflow connect", "create or join a group"],
-    ["coflow doctor", "health check"],
-  ] as const) {
-    console.log(`    ${gradient("▸")} ${pc.cyan(cmd.padEnd(16))} ${pc.dim(desc)}`);
-  }
+  card("Ready to flow", [
+    `${pc.cyan("coflow chat")}     live group chat, grouped by day`,
+    `${pc.cyan("coflow watch")}    live dashboard`,
+    `${pc.cyan("coflow connect")}  create or join a group`,
+    `${pc.cyan("coflow doctor")}   health check`,
+  ]);
   console.log();
 }
 
