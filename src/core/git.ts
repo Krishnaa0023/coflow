@@ -214,6 +214,25 @@ export class Git {
   }
 
   /**
+   * Stage the given paths and commit — but do NOT push. Used for auto-committed
+   * chat summaries: they should land in history (especially the isolated context
+   * branch in worktree mode) without violating "push only at checkpoints". A
+   * no-op when nothing changed.
+   */
+  async commit(
+    paths: string[],
+    message: string,
+  ): Promise<{ committed: boolean; message: string }> {
+    await this.run(["add", "--", ...paths]);
+    const status = await this.run(["status", "--porcelain", "--", ...paths]);
+    if (!status.stdout.trim()) {
+      return { committed: false, message: "no changes to commit" };
+    }
+    await this.run(["commit", "-m", message]);
+    return { committed: true, message: "committed locally" };
+  }
+
+  /**
    * Squash the current branch to a single root commit holding the current tree.
    * Used by `coflow compact` on the dedicated context branch to fight commit
    * bloat — safe there because nobody branches off it. Run in the worktree.

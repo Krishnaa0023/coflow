@@ -43,6 +43,9 @@ export interface Presence {
 // idle-but-open sessions + crash cleanup. SessionEnd removes presence on a clean close.
 const PRESENCE_WINDOW_MS = 15 * 60 * 1000;
 
+/** Max chat messages retained in the ephemeral Upstash history list. */
+const HISTORY_CAP = 1000;
+
 export interface LiveChannel {
   readonly enabled: boolean;
   readonly kind: string;
@@ -203,7 +206,10 @@ export class UpstashChannel implements LiveChannel {
     const payload = JSON.stringify(msg);
     await this.cmd(["PUBLISH", this.channel, payload]);
     await this.cmd(["LPUSH", this.histKey, payload]);
-    await this.cmd(["LTRIM", this.histKey, "0", "199"]);
+    // Keep a generous tail so a full day of chat survives until it's summarized;
+    // history is ephemeral, but trimming too hard would drop messages before the
+    // daily rollover can capture them. ~1k messages is plenty and cheap.
+    await this.cmd(["LTRIM", this.histKey, "0", String(HISTORY_CAP - 1)]);
   }
   async history(limit = 50): Promise<ChatMessage[]> {
     const res = await this.cmd(["LRANGE", this.histKey, "0", String(limit - 1)]);

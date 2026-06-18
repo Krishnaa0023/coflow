@@ -5,7 +5,7 @@ import {
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import {
   intro,
   outro,
@@ -23,11 +23,18 @@ import pc from "picocolors";
 import {
   paths,
   readCoflowConfig,
+  portablePath,
+  executableNames,
   type ContextPaths,
   type StoreMode,
 } from "../core/paths.js";
+
+/** The published package name, and the bin it installs (kept in sync with package.json). */
+const PKG_NAME = "@krish0023/coflow";
+const BIN_NAME = "coflow";
 import { Git } from "../core/git.js";
-import { banner } from "./brand.js";
+import { banner, LOGO_LINES, TAGLINE } from "./brand.js";
+import { revealLogo, typeLine, loadingBar, bootSequence, celebrate, canAnimate } from "./fx.js";
 
 /**
  * `coflow init` — the onboarding entry point.
@@ -104,10 +111,15 @@ function resolveSelfScript(): string {
   }
 }
 
-/** Is `cmd` resolvable on the current PATH? */
+/** Is `cmd` resolvable on the current PATH? Cross-platform (PATH delimiter +
+ * Windows executable extensions), so a global install is detected on Windows. */
 function onPath(cmd: string): boolean {
-  for (const d of (process.env.PATH ?? "").split(":")) {
-    if (d && existsSync(join(d, cmd))) return true;
+  const names = executableNames(cmd);
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    for (const name of names) {
+      if (existsSync(join(dir, name))) return true;
+    }
   }
   return false;
 }
@@ -117,14 +129,14 @@ function detectMode(root: string): Mode {
   if (existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
-      if (pkg.name === "coflow") return "dev";
+      if (pkg.name === PKG_NAME) return "dev";
     } catch {
       /* ignore */
     }
   }
   // Prefer the clean global bin if it exists; otherwise fall back to an
   // absolute-path "self" invocation so init works with zero global install.
-  return onPath("coflow") ? "bin" : "self";
+  return onPath(BIN_NAME) ? "bin" : "self";
 }
 
 function command(
@@ -134,20 +146,59 @@ function command(
 ): { bin: string; prefixArgs: string[] } {
   switch (mode) {
     case "dev":
-      return { bin: "node", prefixArgs: [join(root, "dist", "cli", "main.js")] };
+      // Forward slashes so the path survives JSON/shell embedding on Windows.
+      return { bin: "node", prefixArgs: [portablePath(join(root, "dist", "cli", "main.js"))] };
     case "self":
-      return { bin: "node", prefixArgs: [selfScript] };
+      return { bin: "node", prefixArgs: [portablePath(selfScript)] };
     case "npx":
-      return { bin: "npx", prefixArgs: ["-y", "coflow"] };
+      return { bin: "npx", prefixArgs: ["-y", PKG_NAME] };
     case "bin":
     default:
-      return { bin: "coflow", prefixArgs: [] };
+      return { bin: BIN_NAME, prefixArgs: [] };
   }
+}
+
+/** Quote an argument for the hook command STRING if it contains whitespace
+ * (paths like `C:/Users/First Last/...` would otherwise split into two args). */
+function shellArg(s: string): string {
+  return /\s/.test(s) ? `"${s}"` : s;
 }
 
 function hookCommand(mode: Mode, root: string, name: string, selfScript: string): string {
   const { bin, prefixArgs } = command(mode, root, selfScript);
-  return [bin, ...prefixArgs, "hook", name].join(" ");
+  return [bin, ...prefixArgs.map(shellArg), "hook", name].join(" ");
+}
+
+const HOOK_HANDLER_NAMES = [
+  "session-start", "pre-tool-use", "post-tool-use", "stop", "session-end",
+];
+
+/** Does a hook command belong to coflow (any invocation mode)? Matches
+ * `coflow hook <name>`, `node …/main.js hook <name>`, `npx … hook <name>`. */
+export function isCoflowHookCommand(cmd: unknown): boolean {
+  if (typeof cmd !== "string") return false;
+  const c = cmd.toLowerCase();
+  const looksLikeHook = HOOK_HANDLER_NAMES.some((n) => c.includes(`hook ${n}`));
+  return looksLikeHook && (c.includes("coflow") || c.includes("main.js"));
+}
+
+/**
+ * Remove every existing coflow hook from `settings` (any mode), so re-init can
+ * re-add the correct ones. Without this, a stale/broken command (e.g. a bad
+ * absolute path from an earlier version) would linger beside the fresh one and
+ * keep firing — re-running init must HEAL a broken config, not duplicate it.
+ */
+export function pruneStaleCoflowHooks(settings: Record<string, unknown>): void {
+  const hooks = settings.hooks as Record<string, Array<Record<string, unknown>>> | undefined;
+  if (!hooks) return;
+  for (const event of Object.keys(hooks)) {
+    const kept = (hooks[event] ?? []).filter((group) => {
+      const inner = (group.hooks as Array<Record<string, unknown>>) ?? [];
+      return !inner.some((h) => isCoflowHookCommand(h.command));
+    });
+    if (kept.length) hooks[event] = kept;
+    else delete hooks[event];
+  }
 }
 
 function mergeHook(
@@ -185,7 +236,12 @@ use them freely and proactively, you do not need to ask before calling them.
 - When you receive a 📨 message or a question aimed at you, reply with \`say\`.
 - If you're waiting on a peer (e.g. a file hand-off), call \`inbox\` to check for their reply.
 - New messages from other sessions are auto-injected after your edits — react like a teammate.
-- Talk in this compact protocol (optimised for token cost, not human readability). Exact forms:
+- Chat history is managed for you. Messages older than the window (default 24h) are summarized
+  automatically into \`.context/chat-summaries/YYYY-MM-DD.md\` and dropped from context; you start
+  each session with daily summaries + fresh chat, never a raw stale dump. You never need to
+  summarize or prune chat by hand.
+- Talk in this compact protocol — it is optimised for token cost AND it summarizes better: the
+  keywords below are exactly what the daily summarizer parses into decisions/claims/done/etc. Forms:
   \`CLAIM <path> <sym,sym>\` · \`FREE <path>\` · \`DONE <path> <sym>\` · \`WAIT <peer> <topic>\` · \`ASK <peer> <q>\` · \`ACK\` · \`FYI <text>\`.
   No greetings, articles, or labels; one fact per message; ASCII English keywords only — never emoji, other languages, or invented single-letter codes (they tokenize WORSE and risk misparse). Drop to a short prose sentence only when the protocol genuinely can't carry the nuance.
 - At a task boundary, \`checkpoint\` with a one-line summary (writes your feature file + pushes). Don't checkpoint per edit.
@@ -242,8 +298,10 @@ function applyConfig(p: ContextPaths, answers: Answers, selfScript: string): str
   writeJson(p.configFile, mcp);
   written.push(rel(p.repoRoot, p.configFile));
 
-  // .claude/settings.json — only the selected hooks.
+  // .claude/settings.json — only the selected hooks. Drop any stale coflow
+  // hooks first so re-init heals a previously broken config instead of stacking.
   const settings = readJson(p.settingsFile);
+  pruneStaleCoflowHooks(settings);
   for (const h of answers.hooks) {
     const spec = HOOK_SPECS[h];
     mergeHook(settings, h, spec.matcher, hookCommand(answers.mode, p.repoRoot, spec.hook, selfScript));
@@ -260,14 +318,23 @@ function applyConfig(p: ContextPaths, answers: Answers, selfScript: string): str
   return written;
 }
 
-/** Create the store dir + its local-views gitignore (inside the store root). */
+/** Create the store dirs + its local-views gitignore (inside the store root). */
 function ensureStore(p: ContextPaths): void {
   mkdirSync(p.featuresDir, { recursive: true });
+  // Chat summaries are durable, shared chat memory — committed, NOT gitignored.
+  mkdirSync(p.chatSummariesDir, { recursive: true });
+  // Local-only, per-machine paths that must never be committed (locks included).
+  const want = [".pending/", "BOARD.md", "activity.md", ".locks/"];
   const storeIgnore = join(p.contextDir, ".gitignore");
-  if (!existsSync(storeIgnore)) {
-    // Local-only, per-machine views — never committed.
-    writeFileSync(storeIgnore, ".pending/\nBOARD.md\nactivity.md\n", "utf8");
-  }
+  const existing = existsSync(storeIgnore)
+    ? readFileSync(storeIgnore, "utf8")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+    : [];
+  // Canonical lines first, then preserve any extra ignores the user added.
+  const lines = [...want, ...existing.filter((l) => !want.includes(l))];
+  writeFileSync(storeIgnore, lines.join("\n") + "\n", "utf8");
 }
 
 // --- the visual wizard -----------------------------------------------------
@@ -286,7 +353,14 @@ async function wizard(
   defaultStore: StoreMode,
   defaultBranch: string,
 ): Promise<Answers> {
-  console.log(banner());
+  if (canAnimate()) {
+    await revealLogo(LOGO_LINES);
+    await typeLine(TAGLINE, { delay: 12 });
+    await loadingBar("booting coflow", 750);
+    console.log();
+  } else {
+    console.log(banner());
+  }
   intro(pc.bgCyan(pc.black(" coflow setup ")));
   note(
     [
@@ -461,7 +535,9 @@ export async function init(opts: InitOptions = {}): Promise<void> {
     p = paths();
   }
 
-  const s = interactive ? spinner() : null;
+  // Use the animated boot sequence when we can; otherwise a plain clack spinner.
+  const animating = interactive && canAnimate();
+  const s = interactive && !animating ? spinner() : null;
   s?.start(
     answers.store === "worktree"
       ? "Setting up the dedicated context branch"
@@ -500,6 +576,22 @@ export async function init(opts: InitOptions = {}): Promise<void> {
       ? "Dedicated context branch ready"
       : "Configuration written",
   );
+  // Stylised "install" recap — the real writes already happened above (instantly);
+  // this just sells the moment. Steps mirror the artifacts actually written.
+  if (animating) {
+    await bootSequence([
+      { label: "Linking lifecycle hooks" },
+      { label: "Writing the MCP manifest" },
+      { label: "Teaching CLAUDE.md the compact protocol" },
+      {
+        label:
+          answers.store === "worktree"
+            ? `Carving the '${answers.branch}' context branch`
+            : "Building the .context store",
+      },
+      { label: "Arming daily chat memory (auto-summaries)" },
+    ]);
+  }
   if (warn) {
     if (interactive) log.warn(warn);
     else console.error(warn);
@@ -524,6 +616,7 @@ export async function init(opts: InitOptions = {}): Promise<void> {
 
   if (interactive) {
     note(written.map((w) => `${pc.green("+")} ${w}`).join("\n"), "Wrote");
+    if (animating) await celebrate("✦  COFLOW ONLINE  ✦");
     outro(
       `${pc.green("Done.")}\n` +
         next.map((n, i) => `  ${pc.dim(`${i + 1}.`)} ${n}`).join("\n"),

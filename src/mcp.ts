@@ -4,6 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { Context } from "./core/context.js";
 import { FeatureStatus } from "./core/schema.js";
+import { formatStamp } from "./core/time.js";
+import { redact } from "./core/redact.js";
 
 /**
  * Lean MCP surface. Tool definitions are injected into the model's context on
@@ -19,7 +21,7 @@ function text(s: string) {
 }
 
 export function buildServer(ctx: Context = new Context()): McpServer {
-  const server = new McpServer({ name: "coflow", version: "0.1.0" });
+  const server = new McpServer({ name: "coflow", version: "0.1.1" });
 
   server.registerTool(
     "say",
@@ -43,9 +45,16 @@ export function buildServer(ctx: Context = new Context()): McpServer {
     },
     async ({ limit }) => {
       const msgs = await ctx.inbox(limit ?? 20);
+      const now = new Date().toISOString();
+      const tz = ctx.store.p.timezone;
       return text(
         msgs.length
-          ? msgs.map((m) => `${m.at.slice(11, 16)} ${m.feature}: ${m.text}`).join("\n")
+          ? msgs
+              .map(
+                (m) =>
+                  `${formatStamp(m.at, now, tz)} ${m.feature}: ${redact(m.text).text}`,
+              )
+              .join("\n")
           : "(none)",
       );
     },

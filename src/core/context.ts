@@ -20,9 +20,21 @@ import { resolveChannel, type ChatMessage, type LiveChannel } from "./live.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readJsonSafe, writeJson } from "./jsonfile.js";
+import { ChatSummaryStore } from "./chatstore.js";
+import {
+  buildDailySummary,
+  groupByDay,
+  partitionByWindow,
+  summaryDigest,
+} from "./summary.js";
+import { formatStamp } from "./time.js";
 
 /** Min gap between inbox network reads on the hot path (protects Upstash budget). */
 const INBOX_THROTTLE_MS = 4000;
+/** Min gap between hot-path (PostToolUse) summary rollovers — cheap but not free. */
+const ROLLOVER_THROTTLE_MS = 10 * 60 * 1000;
+/** How many recent messages to scan when rolling over / reading fresh chat. */
+const HISTORY_SCAN = 1000;
 
 /**
  * The service layer. Every MCP tool and every hook routes through here, so the
@@ -41,6 +53,8 @@ export class Context {
   readonly gitStore: Git;
   /** Real-time group-chat channel (no-op unless a group is connected). */
   readonly live: LiveChannel;
+  /** Durable per-day chat summaries (.context/chat-summaries/). */
+  readonly chatSummaries: ChatSummaryStore;
   private ensured = false;
 
   constructor(start?: string) {
@@ -48,6 +62,10 @@ export class Context {
     this.git = new Git(this.store.p.repoRoot);
     this.gitStore = new Git(this.store.p.root);
     this.live = resolveChannel(this.store.p);
+    this.chatSummaries = new ChatSummaryStore(
+      this.store.p.chatSummariesDir,
+      this.store.p.locksDir,
+    );
   }
 
   /** Publish to the group chat, best-effort. Never throws into the caller. */
@@ -140,9 +158,14 @@ export class Context {
       const now = Date.now();
       if (cursor.drainedAt && now - cursor.drainedAt < INBOX_THROTTLE_MS) return [];
       const self = await this.currentFeatureId();
-      const history = await this.live.history(50);
+      const history = await this.live.history(HISTORY_SCAN);
       const last = cursor.at ?? "";
-      const fresh = history.filter((m) => m.feature !== self && m.at > last);
+      // Never resurface a message that has aged past the window (it lives in a
+      // daily summary now, not the live context) even if it was never drained.
+      const cutoff = now - this.store.p.windowHours * 3600_000;
+      const fresh = history.filter(
+        (m) => m.feature !== self && m.at > last && Date.parse(m.at) > cutoff,
+      );
       const maxAt = history.reduce((m, x) => (x.at > m ? x.at : m), last);
       writeJson(cursorFile, { at: maxAt, drainedAt: now });
       return fresh;
@@ -151,14 +174,118 @@ export class Context {
     }
   }
 
-  /** Recent messages from other sessions — for the on-demand inbox tool. */
+  /**
+   * Recent FRESH messages from other sessions — for the on-demand inbox tool.
+   * Stale chat that has already been summarized is excluded, so `inbox` never
+   * returns day-old raw messages as if they were new.
+   */
   async inbox(limit = 20): Promise<ChatMessage[]> {
+    return (await this.freshChat(limit)).filter(
+      (m) => m.feature !== this.lastSelf,
+    );
+  }
+
+  /** Cache the self id so inbox()/freshChat() don't re-resolve it per call. */
+  private lastSelf = "";
+
+  /**
+   * Recent chat still inside the freshness window, sorted oldest-first. This is
+   * the ONLY chat that should reach the model directly — anything older lives in
+   * a daily summary instead.
+   */
+  async freshChat(limit = 12): Promise<ChatMessage[]> {
     if (!this.live.enabled) return [];
     try {
-      const self = await this.currentFeatureId();
-      return (await this.live.history(limit)).filter((m) => m.feature !== self);
+      this.lastSelf = await this.currentFeatureId();
+      const history = await this.live.history(HISTORY_SCAN);
+      const { fresh } = partitionByWindow(
+        history,
+        Date.parse(this.now()),
+        this.store.p.windowHours,
+      );
+      return fresh.slice(-limit);
     } catch {
       return [];
+    }
+  }
+
+  // --- daily chat summaries --------------------------------------------------
+
+  /**
+   * Roll chat older than the window into per-day summary files. Deterministic
+   * and idempotent: re-running with the same messages writes nothing. Safe under
+   * concurrent sessions (per-day file lock). No LLM, no API key.
+   *
+   * In worktree mode (or when `autoCommitSummaries` is set) new/updated summary
+   * files are committed locally — never pushed; push stays a checkpoint action.
+   */
+  async summarizeChat(opts: { force?: boolean } = {}): Promise<{
+    written: string[];
+    skipped: string[];
+  }> {
+    if (!this.store.p.dailySummaries || !this.live.enabled) {
+      return { written: [], skipped: [] };
+    }
+    await this.ready();
+    let history: ChatMessage[];
+    try {
+      history = await this.live.history(HISTORY_SCAN);
+    } catch {
+      return { written: [], skipped: [] }; // offline — try again next trigger
+    }
+    const now = this.now();
+    const { old } = partitionByWindow(history, Date.parse(now), this.store.p.windowHours);
+    const days = groupByDay(old, this.store.p.timezone);
+
+    const written: string[] = [];
+    const skipped: string[] = [];
+    const committable: string[] = [];
+    for (const { day, messages } of days) {
+      const content = buildDailySummary({
+        day,
+        group: this.live.group ?? "",
+        messages,
+        generatedAt: now,
+        tz: this.store.p.timezone,
+      });
+      const r = await this.chatSummaries.write(day, content, opts.force ?? false);
+      if (r.written) {
+        written.push(day);
+        committable.push(`.context/chat-summaries/${day}.md`);
+      } else {
+        skipped.push(day);
+      }
+    }
+
+    if (committable.length && this.store.p.autoCommitSummaries) {
+      try {
+        await this.gitStore.commit(
+          committable,
+          `coflow: chat summaries ${written.join(", ")}`,
+        );
+      } catch {
+        /* best-effort — the files are still written locally */
+      }
+    }
+    return { written, skipped };
+  }
+
+  /**
+   * Hot-path rollover for PostToolUse: throttled and fully swallowed so it never
+   * blocks or breaks normal work. Freshness is also covered by SessionStart,
+   * `coflow chat`, and the manual command.
+   */
+  async maybeRollover(): Promise<void> {
+    if (!this.store.p.dailySummaries || !this.live.enabled) return;
+    try {
+      const f = join(homedir(), ".coflow", "seen", `${this.live.group}__rollover.json`);
+      const last = readJsonSafe<{ at?: number }>(f)?.at ?? 0;
+      const now = Date.now();
+      if (now - last < ROLLOVER_THROTTLE_MS) return;
+      writeJson(f, { at: now });
+      await this.summarizeChat();
+    } catch {
+      /* best-effort */
     }
   }
 
@@ -254,11 +381,28 @@ export class Context {
             `Other live sessions: ${members.map((m) => `${m.feature} (${m.owner})`).join(", ")}.`,
           );
         }
-        const chat = await this.live.history(6);
-        if (chat.length) {
-          parts.push("Recent group chat:");
-          for (const h of chat) {
-            parts.push(`  ${h.at.slice(11, 16)} ${h.feature}·${h.owner}: ${h.text}`);
+
+        const now = this.now();
+        const tz = this.store.p.timezone;
+        // Fresh chat only — raw, date-qualified, re-redacted. Anything older than
+        // the window is intentionally NOT dumped here; it lives in summaries.
+        const fresh = await this.freshChat(8);
+        if (fresh.length) {
+          parts.push(`Recent chat (last ${this.store.p.windowHours}h):`);
+          for (const h of fresh) {
+            parts.push(
+              `  ${formatStamp(h.at, now, tz)} ${h.feature}·${h.owner}: ${redact(h.text).text}`,
+            );
+          }
+        }
+        // Earlier days as compact summary digests, not a raw history dump.
+        const summaries = this.chatSummaries.readRecent(3);
+        if (summaries.length) {
+          parts.push(
+            "Earlier chat is summarized (full text in .context/chat-summaries/, not shown here):",
+          );
+          for (const s of summaries) {
+            parts.push(`  - ${s.day}: ${summaryDigest(s.content)}`);
           }
         }
       } catch {

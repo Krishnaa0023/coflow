@@ -1,6 +1,6 @@
 {
   "name": "@krish0023/coflow",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local-first MCP server that gives every teammate's Claude Code a live, shared picture of what the rest of the team is working on. Git is the source of truth; the vector index is a disposable cache; sync is driven by deterministic hooks.",
   "type": "module",
   "bin": {

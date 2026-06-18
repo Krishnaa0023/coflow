@@ -25,7 +25,8 @@ function has(args: string[], name: string): boolean {
 
 const COMMANDS = [
   "init", "connect", "claude", "go", "chat", "doctor", "watch", "say", "activity",
-  "status", "summary", "board", "search", "checkpoint", "compact", "pull", "mcp", "hook", "help",
+  "status", "summary", "summarize-chat", "board", "search", "checkpoint", "compact",
+  "pull", "mcp", "hook", "help",
 ];
 
 function levenshtein(a: string, b: string): number {
@@ -155,7 +156,7 @@ async function main(): Promise<void> {
 
     case "chat": {
       const { runChat } = await import("./chat.js");
-      await runChat();
+      await runChat({ raw: has(rest, "raw") });
       return;
     }
 
@@ -206,6 +207,29 @@ async function main(): Promise<void> {
       return;
     }
 
+    // Recovery/debug only — summarization runs automatically (SessionStart,
+    // `coflow chat`, and after edits). You should rarely need this by hand.
+    case "summarize-chat": {
+      const ctx = new Context();
+      await ctx.ready();
+      if (!ctx.store.p.dailySummaries) {
+        console.log("daily summaries are disabled (.coflow.json: \"dailySummaries\": false)");
+        return;
+      }
+      if (!ctx.live.enabled) {
+        console.log("no group connected — nothing to summarize (run `coflow connect`)");
+        return;
+      }
+      const r = await ctx.summarizeChat({ force: has(rest, "force") });
+      console.log(
+        r.written.length
+          ? `summaries written: ${r.written.join(", ")}`
+          : "summaries up to date (nothing to write)",
+      );
+      if (r.skipped.length) console.log(`unchanged: ${r.skipped.join(", ")}`);
+      return;
+    }
+
     case "search": {
       const q = rest.join(" ").trim();
       if (!q) {
@@ -242,7 +266,17 @@ async function main(): Promise<void> {
       return;
     }
 
-    case undefined:
+    case undefined: {
+      // Bare `coflow`: animated front door in a terminal; plain help when piped.
+      if (process.stdout.isTTY) {
+        const { landing } = await import("./landing.js");
+        await landing();
+        return;
+      }
+      printHelp();
+      return;
+    }
+
     case "help":
     case "--help":
     case "-h": {
@@ -270,13 +304,14 @@ usage:
   coflow connect [<key>] [--new] [--upstash --url U --token T]
                                           create a group (get a key) or join one
   coflow claude [--as <name>] [...]       launch Claude Code with an auto-assigned identity
-  coflow chat                    live group chat (type to send, /q to quit)
+  coflow chat [--raw]            live group chat, grouped by day (--raw: expand summarized days)
   coflow doctor                  health check: git, channel, config, presence
   coflow watch [--once]          live terminal dashboard
   coflow say <message>           broadcast a note to the group
   coflow activity                show recent cross-session activity
   coflow status                  current feature + pending + summary
   coflow summary                 active features + recent activity
+  coflow summarize-chat [--force]  roll stale chat into daily summaries (runs automatically; this is recovery)
   coflow board                   regenerate .context/BOARD.md
   coflow search <query>          substring search across features
   coflow checkpoint [--summary s] [--status st] [--goal g]

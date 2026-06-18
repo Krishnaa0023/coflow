@@ -14,6 +14,9 @@ export async function run(): Promise<void> {
     const ctx = new Context(input.cwd);
 
     await ctx.pull();
+    // Roll any chat that aged past the window into daily summaries, so this
+    // session starts from summaries + fresh chat — never a raw stale dump.
+    await ctx.summarizeChat();
     // Auto-join the group: register this Claude instance so siblings see it,
     // and mark current chat as seen so later hooks only deliver NEW messages.
     if (ctx.live.enabled) {

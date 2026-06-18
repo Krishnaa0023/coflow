@@ -97,7 +97,8 @@ Interactive wizard. `--yes` accepts all defaults; `--npx` registers the MCP serv
 
 ```bash
 coflow connect           # create a new group (prints key) or join with a key
-coflow chat              # live group-chat view — see messages as they arrive
+coflow chat [--raw]      # live group-chat view, grouped by day (--raw expands summarized days)
+coflow summarize-chat [--force]   # recovery only — rollover runs automatically (see Daily chat memory)
 coflow compact           # squash commits on the context branch (worktree mode) to fight commit bloat
 ```
 
@@ -187,10 +188,12 @@ commands for humans/scripts.)
 
 ```
 .context/
-├── features/<feature>.md     committed — one file per feature (durable record)
-├── BOARD.md                  generated digest of all features      (gitignored)
-├── activity.md               shared append-only activity log       (gitignored)
-└── .pending/<feature>.jsonl  queued deltas awaiting checkpoint     (gitignored)
+├── features/<feature>.md         committed — one file per feature (durable record)
+├── chat-summaries/YYYY-MM-DD.md  committed — one daily chat summary per day (durable)
+├── BOARD.md                      generated digest of all features      (gitignored)
+├── activity.md                   shared append-only activity log       (gitignored)
+├── .pending/<feature>.jsonl      queued deltas awaiting checkpoint     (gitignored)
+└── .locks/                       per-day summary write locks           (gitignored)
 ```
 
 One file per feature keeps merges conflict-free: each session only ever writes its own file. `BOARD.md` and `activity.md` are local, regenerable views that are never committed.
@@ -227,6 +230,57 @@ v: 1
 ```
 
 Structured YAML frontmatter keeps overlap detection and merging mechanical. The Markdown body is a generated, human-readable rendering — it is never parsed back.
+
+---
+
+## Daily chat memory
+
+Group chat spans days, so coflow manages chat history for you — no manual upkeep.
+
+**Timestamps carry their date.** Same-day messages render as `HH:mm`; older ones
+render as `YYYY-MM-DD HH:mm`, and `coflow chat` groups messages under
+`Today` / `Yesterday` / dated dividers. A day-old "FREE src/auth.ts" can never be
+mistaken for a fresh one. Dates are computed in the configured `timezone`
+(default: the machine's local zone).
+
+**Old chat is summarized automatically.** Messages older than the window
+(default 24h) are rolled into one durable summary per day at
+`.context/chat-summaries/YYYY-MM-DD.md`, and dropped from what's injected into
+Claude's context. A new session starts from *daily summaries + the last 24h of
+raw chat* — never a giant stale dump. Summaries are deterministic and built by
+parsing the compact protocol (CLAIM / DONE / WAIT / ASK / FYI …), so **no LLM and
+no API key are involved**.
+
+Summarization is triggered for you on `SessionStart`, when you open `coflow chat`,
+and (throttled) after edits — so **you never run anything by hand**. Re-running is
+idempotent: identical input rewrites nothing, and concurrent sessions are
+serialized by a per-day lock, so two sessions starting at once produce exactly
+one clean file.
+
+**Raw chat stays recoverable.** The original messages are preserved in the live
+channel; they're just not injected once summarized. View them anytime with:
+
+```bash
+coflow chat --raw          # expand summarized days back to raw messages
+coflow summarize-chat       # recovery/debug: force a rollover now (rarely needed)
+coflow summarize-chat --force   # regenerate existing summaries from scratch
+```
+
+### Configuration (`.coflow.json`)
+
+All keys are optional; invalid values fall back to the defaults below.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `dailySummaries` | `true` | Roll stale chat into daily summaries. `false` disables it. |
+| `windowHours` | `24` | How long chat stays fresh (raw, in-context) before summarizing. |
+| `timezone` | `"local"` | Day-bucketing/display zone: `"local"`, `"utc"`, or an IANA name. |
+| `autoCommitSummaries` | `true` in worktree, `false` inline | Commit summary files automatically. In **worktree** mode they commit to the isolated context branch (never pushed outside a checkpoint); **inline** mode leaves them as uncommitted working-tree files so your code branches see no surprise commits. |
+
+```jsonc
+// .coflow.json
+{ "windowHours": 48, "timezone": "Europe/Malta" }
+```
 
 ---
 

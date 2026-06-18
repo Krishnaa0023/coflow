@@ -1,5 +1,7 @@
 import { Context } from "../core/context.js";
 import { readHookInput, filesFromToolInput, emit } from "./io.js";
+import { formatStamp } from "../core/time.js";
+import { redact } from "../core/redact.js";
 
 /**
  * PostToolUse on Edit|Write: record a structured delta locally (no push), then
@@ -27,10 +29,14 @@ export async function run(): Promise<void> {
     if (ctx.live.enabled) {
       const sid = input.session_id ?? `pid-${process.pid}`;
       await ctx.announcePresence(sid); // heartbeat — keeps this session "live" while active
+      await ctx.maybeRollover(); // throttled: roll stale chat into summaries off the hot path
       const fresh = await ctx.drainInbox(sid);
       if (fresh.length > 0) {
+        const now = new Date().toISOString();
+        const tz = ctx.store.p.timezone;
         const lines = fresh.map(
-          (m) => `  ${m.at.slice(11, 16)} ${m.feature}·${m.owner}: ${m.text}`,
+          (m) =>
+            `  ${formatStamp(m.at, now, tz)} ${m.feature}·${m.owner}: ${redact(m.text).text}`,
         );
         emit({
           hookSpecificOutput: {

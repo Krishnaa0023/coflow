@@ -43,6 +43,19 @@ export async function runDoctor(): Promise<void> {
     add("warn", "group chat", "not connected — run `coflow connect` to enable real-time chat");
   }
 
+  // Chat memory (daily summaries)
+  if (p.dailySummaries) {
+    const days = ctx.chatSummaries.list();
+    add(
+      "ok",
+      "chat memory",
+      `daily summaries on · window ${p.windowHours}h · tz ${p.timezone} · ` +
+        `${days.length} day(s) stored${p.autoCommitSummaries ? " · auto-commit" : ""}`,
+    );
+  } else {
+    add("warn", "chat memory", "daily summaries disabled (.coflow.json)");
+  }
+
   // Config
   const mcp = readJsonSafe<{ mcpServers?: Record<string, unknown> }>(p.configFile);
   const hasMcp = Boolean(mcp?.mcpServers && (mcp.mcpServers as Record<string, unknown>).coflow);
